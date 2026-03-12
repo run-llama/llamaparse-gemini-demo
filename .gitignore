@@ -12,3 +12,6 @@ wheels/
 # data
 *.pdf
 *.csv
+
+# caches
+.ruff_cache/

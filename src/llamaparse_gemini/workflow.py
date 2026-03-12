@@ -12,6 +12,7 @@ from jinja2 import Template
 from google.genai import Client as GenAIClient
 from .resources import get_llama_parse, get_llm, get_prompt_template
 
+
 class WorkflowState(BaseModel):
     parsing_job_result: ParsingJobResult | None = None
     extracted_text: str = ""
@@ -19,41 +20,50 @@ class WorkflowState(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+
 class FileEvent(StartEvent):
     input_file: str
 
+
 class ParsingDoneEvent(Event):
     """
-    Event to signal that parsing is done. 
+    Event to signal that parsing is done.
     Parsing results are available through WorkflowState.
     """
+
     pass
+
 
 class TextExtractionDoneEvent(Event):
     pass
 
+
 class TableExtractionDoneEvent(Event):
-    pass 
-    
+    pass
+
+
 class OutputEvent(StopEvent):
     final_result: str | None = None
     error: str | None = None
 
 
-
 class BrokerageStatementWorkflow(Workflow):
     @step
     async def parse_file(
-        self, 
-        ev: FileEvent, 
-        ctx: Context[WorkflowState], 
-        parser: Annotated[LlamaParse, Resource(get_llama_parse)]
+        self,
+        ev: FileEvent,
+        ctx: Context[WorkflowState],
+        parser: Annotated[LlamaParse, Resource(get_llama_parse)],
     ) -> ParsingDoneEvent | OutputEvent:
         try:
             print("Starting to parse file...")
-            result = cast(ParsingJobResult, (await parser.aparse(file_path=ev.input_file)))
+            result = cast(
+                ParsingJobResult, (await parser.aparse(file_path=ev.input_file))
+            )
             if result.error is not None:
-                return OutputEvent(error=f"Error {result.error_code} occurred while parsing: {result.error}")
+                return OutputEvent(
+                    error=f"Error {result.error_code} occurred while parsing: {result.error}"
+                )
             async with ctx.store.edit_state() as state:
                 state.parsing_job_result = result
             print("Parsing done!")
@@ -63,28 +73,32 @@ class BrokerageStatementWorkflow(Workflow):
 
     @step
     async def extract_text(
-        self, 
+        self,
         ev: ParsingDoneEvent,
         ctx: Context[WorkflowState],
     ) -> TextExtractionDoneEvent:
         print("Extracting text...")
-        parsing_result = cast(ParsingJobResult, (await ctx.store.get_state()).parsing_job_result)
+        parsing_result = cast(
+            ParsingJobResult, (await ctx.store.get_state()).parsing_job_result
+        )
         # get the entire markdown text
         text = await parsing_result.aget_markdown()
         async with ctx.store.edit_state() as state:
             state.extracted_text = text
         print("Text extraction finished!")
         return TextExtractionDoneEvent()
-    
+
     @step
     async def extract_tables(
         self,
         ev: ParsingDoneEvent,
         ctx: Context[WorkflowState],
-        parser: Annotated[LlamaParse, Resource(get_llama_parse)]
+        parser: Annotated[LlamaParse, Resource(get_llama_parse)],
     ) -> TableExtractionDoneEvent:
         print("Extracting tables...")
-        parsing_result = cast(ParsingJobResult, (await ctx.store.get_state()).parsing_job_result)
+        parsing_result = cast(
+            ParsingJobResult, (await ctx.store.get_state()).parsing_job_result
+        )
         json_job_result = await parsing_result.aget_json()
         # get the tables and download them as CSV files
         os.makedirs("tables/", exist_ok=True)
@@ -103,25 +117,31 @@ class BrokerageStatementWorkflow(Workflow):
 
         print("Table extraction finished!")
         return TableExtractionDoneEvent()
-    
+
     @step
     async def ask_llm(
         self,
         ev: TableExtractionDoneEvent | TextExtractionDoneEvent,
         ctx: Context[WorkflowState],
         llm: Annotated[GenAIClient, Resource(get_llm)],
-        template: Annotated[Template, Resource(get_prompt_template)]
+        template: Annotated[Template, Resource(get_prompt_template)],
     ) -> OutputEvent:
-        if ctx.collect_events(
-            ev,
-            [TableExtractionDoneEvent, TextExtractionDoneEvent],
-        ) is None:
-            return None # type: ignore
-        
+        if (
+            ctx.collect_events(
+                ev,
+                [TableExtractionDoneEvent, TextExtractionDoneEvent],
+            )
+            is None
+        ):
+            return None  # type: ignore
+
         # when data extraction is complete:
         state = await ctx.store.get_state()
 
-        prompt = template.render(extracted_text=state.extracted_text, extracted_tables="\n\n".join(state.extracted_tables))
+        prompt = template.render(
+            extracted_text=state.extracted_text,
+            extracted_tables="\n\n".join(state.extracted_tables),
+        )
 
         try:
             response = await llm.aio.models.generate_content(
@@ -132,7 +152,6 @@ class BrokerageStatementWorkflow(Workflow):
                 return OutputEvent(error="Could not generate the final response")
             return OutputEvent(final_result=response.text)
         except Exception as e:
-            return OutputEvent(error=f"An error occured while generating the final response: {e}")
-
-
-
+            return OutputEvent(
+                error=f"An error occured while generating the final response: {e}"
+            )
